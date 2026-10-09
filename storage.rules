@@ -1,0 +1,29 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    // Avatar images
+    match /avatars/{fileName} {
+      allow read: if true;
+      allow write: if isAuthenticated() &&
+        isImage() &&
+        request.resource.size < 5 * 1024 * 1024; // 5 MB max
+    }
+
+    // Post images
+    match /post_images/{fileName} {
+      allow read: if true;
+      allow write: if isAuthenticated() &&
+        isImage() &&
+        request.resource.size < 15 * 1024 * 1024; // 15 MB max
+    }
+  }
+}

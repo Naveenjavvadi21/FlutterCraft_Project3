@@ -1,0 +1,124 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // --------------------------------------------------
+    // Users Collection
+    // --------------------------------------------------
+    match /users/{userId} {
+      // Anyone authenticated can read user profiles
+      allow read: if isAuthenticated();
+
+      // Only owner can create or update profile fields
+      // Also allows server-side batches/transactions for counter increments
+      allow create: if isOwner(userId);
+      allow update: if isAuthenticated() && (
+        isOwner(userId) ||
+        // Allow other users to update followersCount via follow/unfollow batch
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['followersCount'])
+      );
+      allow delete: if false;
+
+      // Following Subcollection: users/{userId}/following/{targetUserId}
+      match /following/{targetUserId} {
+        allow read: if isAuthenticated();
+        // Only the user themselves can modify who they are following
+        allow create, delete: if isOwner(userId);
+      }
+
+      // Followers Subcollection: users/{userId}/followers/{followerUserId}
+      match /followers/{followerUserId} {
+        allow read: if isAuthenticated();
+        // The follower can create or remove themselves from the followers list
+        allow create, delete: if isAuthenticated() && request.auth.uid == followerUserId;
+      }
+
+      // Blocked Users Subcollection: users/{userId}/blocks/{blockedUserId}
+      match /blocks/{blockedUserId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // --------------------------------------------------
+    // Posts Collection
+    // --------------------------------------------------
+    match /posts/{postId} {
+      allow read: if isAuthenticated();
+
+      // Creating a post: must be authenticated and authorId must match auth.uid
+      allow create: if isAuthenticated() &&
+        request.resource.data.authorId == request.auth.uid &&
+        request.resource.data.likesCount == 0 &&
+        request.resource.data.commentsCount == 0;
+
+      // Updating a post:
+      // Author can update text/image, or other users can modify atomic counters (likesCount, commentsCount)
+      allow update: if isAuthenticated() && (
+        resource.data.authorId == request.auth.uid ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesCount']) ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['commentsCount'])
+      );
+
+      // Deleting a post: only the author
+      allow delete: if isAuthenticated() && resource.data.authorId == request.auth.uid;
+
+      // Likes Subcollection: posts/{postId}/likes/{userId}
+      match /likes/{userId} {
+        allow read: if isAuthenticated();
+        // Only the liking user can create or delete their like document
+        allow create, delete: if isOwner(userId);
+      }
+
+      // Comments Subcollection: posts/{postId}/comments/{commentId}
+      match /comments/{commentId} {
+        allow read: if isAuthenticated();
+        // Only authenticated user matching authorId can create comment
+        allow create: if isAuthenticated() &&
+          request.resource.data.authorId == request.auth.uid;
+        // Comment author or post author can delete a comment
+        allow delete: if isAuthenticated() && (
+          resource.data.authorId == request.auth.uid ||
+          get(/databases/$(database)/documents/posts/$(postId)).data.authorId == request.auth.uid
+        );
+      }
+    }
+
+    // --------------------------------------------------
+    // Notifications Collection
+    // --------------------------------------------------
+    match /notifications/{notificationId} {
+      // Recipient can read their notifications
+      allow read: if isAuthenticated() && resource.data.recipientId == request.auth.uid;
+
+      // Actor can create notification for someone else
+      allow create: if isAuthenticated() &&
+        request.resource.data.actorId == request.auth.uid &&
+        request.resource.data.recipientId != request.auth.uid;
+
+      // Recipient can update read status
+      allow update: if isAuthenticated() &&
+        resource.data.recipientId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+
+      allow delete: if isAuthenticated() && resource.data.recipientId == request.auth.uid;
+    }
+
+    // --------------------------------------------------
+    // Reports Collection (Moderation)
+    // --------------------------------------------------
+    match /reports/{reportId} {
+      // Authenticated users can submit abuse/spam reports
+      allow create: if isAuthenticated() && request.resource.data.reporterId == request.auth.uid;
+      allow read, update, delete: if false; // Only accessible via Cloud Functions / Admin SDK
+    }
+  }
+}
